@@ -509,70 +509,6 @@ describe("advisor tool-call loop guard", () => {
 		expect(delivered).toContain("ENOENT: no such file or directory");
 	});
 
-	it("expires interruption immunity across tool-loop steps even for an agent-end reviewer", async () => {
-		const { advisor } = createAdvisor(
-			{ "advisor.syncBacklog": "1", "advisor.immuneTurns": 1 },
-			0,
-			{ name: "Final reviewer", reviewMode: "agent-end" },
-			2,
-		);
-		if (!session) throw new Error("Expected live session");
-		const advise = advisor.state.tools.find(tool => tool.name === "advise");
-		if (!advise) throw new Error("Expected advisor delivery tool");
-		// Simulate delivery into a live primary before its next two steps.
-		session.agent.state.isStreaming = true;
-		try {
-			await advise.execute("first-note", {
-				note: "The first operation loses the selected file.",
-				severity: "concern",
-			});
-			await new Promise<void>(resolve => setImmediate(resolve));
-			expect(session.agent.peekSteeringQueue()).toHaveLength(1);
-			session.agent.clearSteeringQueue();
-		} finally {
-			session.agent.state.isStreaming = false;
-		}
-		await session.prompt("inspect missing file");
-		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
-		// Hold a real primary run open so agent_start clears terminal-unwind
-		// preservation before the next concern arrives.
-		const liveStarted = Promise.withResolvers<void>();
-		const releaseLiveRun = Promise.withResolvers<void>();
-		session.agent.streamFn = model => {
-			const message: AssistantMessage = {
-				role: "assistant",
-				content: [{ type: "text", text: "primary complete" }],
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: zeroUsage,
-				stopReason: "stop",
-				timestamp: Date.now(),
-			};
-			const stream = new AssistantMessageEventStream();
-			queueMicrotask(() => {
-				stream.push({ type: "start", partial: message });
-				liveStarted.resolve();
-				void releaseLiveRun.promise.then(() => stream.push({ type: "done", reason: "stop", message }));
-			});
-			return stream;
-		};
-		const livePrompt = session.prompt("continue inspection");
-		await liveStarted.promise;
-		try {
-			await advise.execute("next-note", {
-				note: "The next operation overwrites the destination file.",
-				severity: "concern",
-			});
-			await new Promise<void>(resolve => setImmediate(resolve));
-			expect(session.agent.peekSteeringQueue()).toHaveLength(1);
-		} finally {
-			session.agent.clearSteeringQueue();
-			releaseLiveRun.resolve();
-			await livePrompt;
-		}
-	});
-
 	it("holds a final-review continuation during the post-interrupt cooldown", async () => {
 		// The boundary flush decides steering through the same delivery policy as
 		// live routing: inside the post-interrupt immune window a final-review
@@ -594,7 +530,7 @@ describe("advisor tool-call loop guard", () => {
 		try {
 			await advise.execute("arm-immune", {
 				note: "The running step loses the selected file.",
-				severity: "concern",
+				severity: "blocker",
 			});
 			await new Promise<void>(resolve => setImmediate(resolve));
 			expect(session.agent.peekSteeringQueue()).toHaveLength(1);

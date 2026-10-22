@@ -1501,6 +1501,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (epoch === this.#inFlightEpoch) this.#promptInFlightCount = Math.max(0, this.#promptInFlightCount - 1);
 		if (this.#promptInFlightCount !== 0) return;
 		this.yieldQueue.requestIdleFlush();
+		this.#advisors.preserveQueuedAdvice();
 		this.#releasePowerAssertion();
 		this.#endComputerTurn();
 		this.#flushPendingAgentEnd();
@@ -2802,6 +2803,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			onSseEvent: this.#onSseEvent,
 			isDisposed: () => this.#isDisposed,
 			abortInProgress: () => this.#abortInProgress,
+			isAgentConnected: () => this.#unsubscribeAgent !== undefined,
 			allowAgentInitiatedTurns: () => this.#allowAcpAgentInitiatedTurns,
 			planModeState: () => this.#planModeState,
 			clientBridge: () => this.#clientBridge,
@@ -6337,6 +6339,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#disconnectedMessageCount = undefined;
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
 		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => this.#emitQueueUpdateIfChanged());
+		// An aside queued before the disconnect (e.g. a `/compact` boundary) has no
+		// subscriber until this line runs; re-record it now that events flow again.
+		this.#advisors.preserveQueuedAdvice();
 	}
 
 	#activeProviderSessionId(sessionId?: string): string {
@@ -11721,7 +11726,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			if (parkedAdvisorCards.length > 0) {
 				this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(m => !isAdvisorCard(m));
 			}
-			for (const message of [...strandedMessages, ...parkedAdvisorCards]) {
+			// Advice still waiting for the next model step is stranded by a user interrupt too.
+			const strandedAdvice = userInterrupt ? this.#advisors.drainQueuedAdvice() : [];
+			for (const message of [...strandedMessages, ...strandedAdvice, ...parkedAdvisorCards]) {
 				if (isAdvisorCard(message)) this.#preserveAdvisorCard(message);
 				else if (this.agent.state.isStreaming) {
 					// Requeued as ordinary work: a later abort must not take it out again.
