@@ -49,9 +49,14 @@ import {
 	wordCompletionQuery,
 } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { requestTextPrediction, textPredictionBackend } from "../../predict/client";
+import {
+	type SettingSideEffectOptions,
+	replaySessionSettingSideEffects,
+	snapshotReplaySettings,
+} from "../controllers/setting-side-effects";
 import { type AgentSession, type NavigateTreeResult, SessionBusyError } from "../../session/agent-session";
 import type { AgentSessionHandle } from "../../session/agent-session-handle";
-import type { MCPManager } from "../../mcp/manager";
+import { MCPManager } from "../../mcp/manager";
 import { reconnectMcpManagerServer } from "../../mcp/oauth-reauth";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
@@ -368,6 +373,27 @@ export async function tryRunRpcSkillCommand(
 	if (!invocation) return false;
 	await runRpcSkillCommand(session, invocation, streamingBehavior, undefined, undefined, images);
 	return { agentInvoked: true };
+}
+
+/**
+ * Applies the reload allowlist's changed session-level side effects and
+ * resolves after they have settled, then emits the RPC `config_update` frame
+ * — the host's acknowledgment must not precede the mutations (think tool,
+ * memory backend) landing, or the next prompt runs against the old tool set.
+ * RunRpcMode wires this as the builtin runtime's `notifyConfigChanged` with a
+ * `snapshotReplaySettings` snapshot taken before the command runs, mirroring
+ * the TUI adapter's replay-before-notify contract, and the process MCP manager
+ * instance so a changed `mcp.notifications` reuses `setNotificationsEnabled`
+ * on the live connections; exported for tests.
+ */
+export async function emitRpcConfigUpdate(
+	session: AgentSession,
+	output: (obj: object) => void,
+	beforeReplay: ReadonlyMap<string, unknown>,
+	options: SettingSideEffectOptions = {},
+): Promise<void> {
+	await replaySessionSettingSideEffects(session, beforeReplay, options);
+	output({ type: "config_update", model: session.model, thinkingLevel: session.thinkingLevel });
 }
 
 /**
@@ -1935,6 +1961,9 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				const builtinAbort = new AbortController();
 				builtinCommandAborts.add(builtinAbort);
 				let backgroundedBuiltin = false;
+				// Snapshot before the command runs so the replay only applies
+				// settings the command actually changed (TUI-adapter parity).
+				const beforeReplay = snapshotReplaySettings(session.settings);
 				const builtinResult = await executeAcpBuiltinSlashCommand(text, {
 					session,
 					sessionManager: session.sessionManager,
@@ -1964,8 +1993,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					notifyTitleChanged: async () => {
 						output({ type: "session_info_update", title: session.sessionName, sessionId: session.sessionId });
 					},
-					notifyConfigChanged: async () => {
-						output({ type: "config_update", model: session.model, thinkingLevel: session.thinkingLevel });
+					notifyConfigChanged: () => {
+						const mcpManager = MCPManager.instance();
+						return emitRpcConfigUpdate(session, output, beforeReplay, {
+							mcpManager: mcpManager instanceof MCPManager ? mcpManager : undefined,
+						});
 					},
 				});
 				if (!backgroundedBuiltin) builtinCommandAborts.delete(builtinAbort);
