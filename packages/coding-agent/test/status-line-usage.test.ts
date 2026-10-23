@@ -942,6 +942,29 @@ describe("advisor usage in the cost segment", () => {
 		expect(content).not.toContain("$");
 	});
 
+	it("prefers the untiered advisor window whatever the report order", async () => {
+		const tiered = [
+			{ scope: { windowId: "5h", tier: "pro" }, amount: { usedFraction: 0.9 } },
+			{ scope: { windowId: "7d", tier: "pro" }, amount: { usedFraction: 0.8 } },
+		];
+		const untiered = [
+			{ scope: { windowId: "5h" }, amount: { usedFraction: 0.4 } },
+			{ scope: { windowId: "7d" }, amount: { usedFraction: 0.3 } },
+		];
+		for (const limits of [
+			[...tiered, ...untiered],
+			[...untiered, ...tiered],
+		]) {
+			const content = await renderCost({
+				reports: [{ provider: "anthropic", limits }],
+				advisorCost: 1,
+				advisorAccounts: [{ provider: "anthropic" }],
+			});
+			expect(content).toContain("5h 40%");
+			expect(content).toContain("7d 30%");
+		}
+	});
+
 	it("falls back to the dollar amount for advisors with no quota endpoint", async () => {
 		const content = await renderCost({
 			reports: [],

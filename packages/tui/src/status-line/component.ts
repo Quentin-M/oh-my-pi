@@ -2503,8 +2503,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const now = Date.now();
 		const fiveHour: { percent: number; resetMinutes?: number; resetHours?: number } = { percent: -1 };
 		const sevenDay: { percent: number; resetMinutes?: number; resetHours?: number } = { percent: -1 };
-		let fiveHourUntiered = false;
-		let sevenDayUntiered = false;
+		type Best = { percent: number; resetsAt?: number };
+		type Window = { untiered?: Best; tiered?: Best };
+		// Tier precedence is per provider and window; picking it before the max keeps the result order-independent.
+		const byProvider = new Map<string, { "5h": Window; "7d": Window }>();
 		const revise = (bucket: typeof fiveHour, percent: number, resetsAt: number | undefined): void => {
 			if (percent <= bucket.percent) return;
 			bucket.percent = percent;
@@ -2535,18 +2537,24 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 					if (!windowClass) continue;
 					const fraction = l.amount?.usedFraction;
 					if (typeof fraction !== "number") continue;
-					const untiered = !l.scope?.tier;
-					if (windowClass === "5h") {
-						if (untiered) fiveHourUntiered = true;
-						if (fiveHourUntiered && !untiered) continue;
-						revise(fiveHour, fraction * 100, l.window?.resetsAt);
-					} else {
-						if (untiered) sevenDayUntiered = true;
-						if (sevenDayUntiered && !untiered) continue;
-						revise(sevenDay, fraction * 100, l.window?.resetsAt);
+					let windows = byProvider.get(provider);
+					if (!windows) {
+						windows = { "5h": {}, "7d": {} };
+						byProvider.set(provider, windows);
 					}
+					const tier = l.scope?.tier ? "tiered" : "untiered";
+					const best = windows[windowClass][tier];
+					const percent = fraction * 100;
+					if (!best || percent > best.percent)
+						windows[windowClass][tier] = { percent, resetsAt: l.window?.resetsAt };
 				}
 			}
+		}
+		for (const windows of byProvider.values()) {
+			const fiveHourBest = windows["5h"].untiered ?? windows["5h"].tiered;
+			if (fiveHourBest) revise(fiveHour, fiveHourBest.percent, fiveHourBest.resetsAt);
+			const sevenDayBest = windows["7d"].untiered ?? windows["7d"].tiered;
+			if (sevenDayBest) revise(sevenDay, sevenDayBest.percent, sevenDayBest.resetsAt);
 		}
 		const result: {
 			fiveHour?: { percent: number; resetMinutes?: number };
@@ -3758,7 +3766,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		}
 		if (bottomBar !== "none") {
 			const main = this.renderBottomBar(width, bottomBar);
-			if (main) lines.push(main);
+			if (main) lines.push(...main.split("\n"));
 		}
 		return lines;
 	}
@@ -4065,7 +4073,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			const content = this.renderBottomBar(width, this.#standalone === "left-only" ? "left" : "full");
 			if (content) {
 				if (this.#standaloneGap) lines.push("");
-				lines.push(content);
+				lines.push(...content.split("\n"));
 			}
 		}
 		const showHooks = this.#settings.showHookStatus ?? true;
