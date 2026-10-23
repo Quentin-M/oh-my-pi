@@ -599,6 +599,17 @@ describe("status line two-line overflow", () => {
 		expect(stripAnsi(lines[1])).toContain(modelName);
 	});
 
+	it("splits a two-line standalone bottom bar into two rendered rows", () => {
+		const { component, modelName, pathOptions } = buildLeftOverflow();
+		const width = leftOverflowWidth(createStatusLineSession("two line overflow", modelName), pathOptions);
+		component.setComposerStyle({ statusAttachment: "none", bottomBar: "full", bottomBarGap: false });
+
+		const rows = component.render(width);
+		expect(rows.length).toBe(2);
+		expect(rows.every(row => !row.includes("\n"))).toBe(true);
+		expect(stripAnsi(rows[1])).toContain(modelName);
+	});
+
 	it("stays single-line at a generous width (no regression)", () => {
 		const { component, modelName } = buildLeftOverflow();
 		const border = component.getTopBorder(500);
