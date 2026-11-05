@@ -406,6 +406,7 @@ import {
 	cfgDisplayCacheMissMarker,
 	cfgDisplayCollapseCompacted,
 	cfgDisplayCollapsedToolTitles,
+	cfgDisplayGroupToolCalls,
 	cfgDisplayHideToolActivity,
 	cfgDisplayPinnedAgents,
 	cfgDisplayShowTokenUsage,
@@ -514,6 +515,7 @@ const cfgLiveUiSettings = combine({
 	"display.cacheMissMarker": cfgDisplayCacheMissMarker,
 	"display.collapseCompacted": cfgDisplayCollapseCompacted,
 	"display.collapsedToolTitles": cfgDisplayCollapsedToolTitles,
+	"display.groupToolCalls": cfgDisplayGroupToolCalls,
 	"display.showTokenUsage": cfgDisplayShowTokenUsage,
 	"display.showTurnTime": cfgDisplayShowTurnTime,
 	"tui.renderMermaid": cfgTuiRenderMermaid,
@@ -4338,6 +4340,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				"display.cacheMissMarker",
 				"display.collapseCompacted",
 				"display.collapsedToolTitles",
+				"display.groupToolCalls",
 				"display.showTokenUsage",
 				"display.showTurnTime",
 			)

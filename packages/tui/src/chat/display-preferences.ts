@@ -2,6 +2,7 @@
 export interface ChatTranscriptDisplayPreferences {
 	hideToolActivity: boolean;
 	collapsedToolTitles: boolean;
+	groupToolCalls: boolean;
 	readToolResultPreview: boolean;
 	showImages: boolean;
 	cacheMissMarker: boolean;
@@ -15,6 +16,7 @@ export interface ChatTranscriptDisplayPreferences {
 export const chatTranscriptDisplayPreferences: ChatTranscriptDisplayPreferences = {
 	hideToolActivity: false,
 	collapsedToolTitles: false,
+	groupToolCalls: false,
 	readToolResultPreview: false,
 	showImages: true,
 	cacheMissMarker: false,

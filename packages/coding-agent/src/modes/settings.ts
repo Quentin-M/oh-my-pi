@@ -780,6 +780,19 @@ export const cfgDisplayCollapsedToolTitles = register({
 	},
 });
 
+export const cfgDisplayGroupToolCalls = register({
+	id: "display.groupToolCalls",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Group Tool Calls",
+		description:
+			"Fold back-to-back tool calls into one summary row; Ctrl+O expands every run, a click (with Mouse Click-to-Focus) expands one",
+	},
+});
+
 export const cfgDisplayShowTokenUsage = register({
 	id: "display.showTokenUsage",
 	type: "boolean",
@@ -839,6 +852,7 @@ effect(
 	combine({
 		hideToolActivity: cfgDisplayHideToolActivity,
 		collapsedToolTitles: cfgDisplayCollapsedToolTitles,
+		groupToolCalls: cfgDisplayGroupToolCalls,
 		readToolResultPreview: cfgReadToolResultPreview,
 		showImages: cfgTerminalShowImages,
 		cacheMissMarker: cfgDisplayCacheMissMarker,
