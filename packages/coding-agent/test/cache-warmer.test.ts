@@ -68,6 +68,8 @@ function makeMessage(usage: Usage, stopReason: AssistantMessage["stopReason"] = 
 type ReplayScript =
 	/** Envelope carries `usage`, then the model starts generating (the warmer cuts it off). */
 	| { kind: "generate"; usage: Usage }
+	/** Envelope carries no usage (a gateway relaying Converse); the model generates, then `done` reports it. */
+	| { kind: "late"; usage: Usage }
 	/** The replay completes without generating (e.g. a one-token cap on a non-thinking model). */
 	| { kind: "done"; usage: Usage }
 	/** A refresh stays in flight until its run is cancelled. */
@@ -91,14 +93,17 @@ function scriptedStream(script: ReplayScript, record: ReplayRecord): CacheWarmSt
 		final = makeMessage(makeUsage({}), "error");
 		events.push({ type: "error", reason: "error", error: final });
 	} else {
-		const partial = makeMessage(script.usage);
+		const partial = makeMessage(
+			script.kind === "late" ? { ...makeUsage({}), input: 0, totalTokens: 0 } : script.usage,
+		);
 		events.push({ type: "start", partial });
-		if (script.kind === "generate") {
+		if (script.kind === "generate" || script.kind === "late") {
 			events.push({ type: "thinking_start", contentIndex: 0, partial });
 			events.push({ type: "thinking_delta", contentIndex: 0, delta: "more thinking", partial });
 		}
-		final = script.kind === "done" ? partial : makeMessage(script.usage, "aborted");
-		if (script.kind === "done") events.push({ type: "done", reason: "stop", message: final });
+		final = script.kind === "done" ? partial : makeMessage(script.usage, script.kind === "late" ? "stop" : "aborted");
+		if (script.kind === "done" || script.kind === "late")
+			events.push({ type: "done", reason: "stop", message: final });
 	}
 	return {
 		async *[Symbol.asyncIterator]() {
@@ -343,6 +348,18 @@ describe("cache warmer lifecycle", () => {
 		expect(h.replays).toHaveLength(2);
 	});
 
+	test("reads to the terminal usage when the envelope reports none", async () => {
+		const h = harness();
+		h.script = { kind: "late", usage: makeUsage({ cacheRead: PROMPT_TOKENS, output: 1 }) };
+		start(h);
+		await advance(SHORT_DELAY_MS);
+		expect(h.replays[0]?.cutOff).toBe(false);
+		expect(h.replays[0]?.consumed).toEqual(["start", "thinking_start", "thinking_delta", "done"]);
+		expect(h.warmer.status.state).toBe("scheduled");
+		await advance(SHORT_DELAY_MS);
+		expect(h.replays).toHaveLength(2);
+	});
+
 	test("stops after a refresh that re-wrote the prefix instead of reading it", async () => {
 		const h = harness();
 		h.script = { kind: "done", usage: makeUsage({ cacheWrite: PROMPT_TOKENS, output: 1 }) };
@@ -421,13 +438,14 @@ describe("cache warmer lifecycle", () => {
 		expect(status.decision?.continuationProbability).toBe(0.15);
 	});
 
-	test("idle warming stops at the 30-minute safety limit", async () => {
+	test("idle warming stops at the 1-hour safety limit", async () => {
 		const forced = harness({ decide: () => Promise.resolve("warm") });
 		start(forced);
 		forced.warmer.onAgentSettled();
-		for (let minute = 0; minute < 40; minute++) await advance(60_000);
-		expect(forced.replays.length).toBeGreaterThan(0);
-		expect(forced.warmer.status).toMatchObject({ state: "inactive", reason: "30-minute idle safety limit reached" });
+		for (let minute = 0; minute < 70; minute++) await advance(60_000);
+		// 4.5-minute refreshes over an hour: past the 6 that half an hour allows.
+		expect(forced.replays.length).toBeGreaterThan(10);
+		expect(forced.warmer.status).toMatchObject({ state: "inactive", reason: "1-hour idle safety limit reached" });
 	});
 
 	test("warms a 1h entry during an active run but not after it settles", async () => {
@@ -441,7 +459,7 @@ describe("cache warmer lifecycle", () => {
 		settled.warmer.onAgentSettled();
 		expect(settled.warmer.status).toMatchObject({
 			state: "inactive",
-			reason: "cache entry outlives the 30-minute idle window",
+			reason: "cache entry outlives the 1-hour idle window",
 		});
 	});
 
@@ -457,7 +475,7 @@ describe("cache warmer lifecycle", () => {
 		expect(h.replays).toHaveLength(0);
 		// A settled 1h run no longer idle-warms every 4.5 minutes.
 		h.warmer.onAgentSettled();
-		expect(h.warmer.status.reason).toBe("cache entry outlives the 30-minute idle window");
+		expect(h.warmer.status.reason).toBe("cache entry outlives the 1-hour idle window");
 	});
 
 	test("schedules Factory Droid Claude models at the tier their upstream actually writes", () => {

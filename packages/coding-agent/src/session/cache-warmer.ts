@@ -57,8 +57,8 @@ export type PromptCacheTier = "short" | "long";
 
 /** Streaming warming never continues past this long after the real request that started it. */
 const MAX_WARMING_AGE_MS = 60 * 60_000;
-/** Idle warming uses a shorter horizon because continuation estimates become less reliable with age. */
-const MAX_IDLE_WARMING_AGE_MS = 30 * 60_000;
+/** Idle warming keeps a short entry alive for up to an hour, the same horizon a 1h entry gives for free. */
+const MAX_IDLE_WARMING_AGE_MS = 60 * 60_000;
 /** A refresh is sent only when it is expected to save at least this many dollars. */
 const CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS = 0.05;
 /**
@@ -594,11 +594,11 @@ export class CacheWarmer {
 
 	#idleStopReason(run: ActiveRun): string | undefined {
 		const deadline = run.startedAt + MAX_IDLE_WARMING_AGE_MS;
-		if (Date.now() >= deadline) return "30-minute idle safety limit reached";
+		if (Date.now() >= deadline) return "1-hour idle safety limit reached";
+		// Refreshes land at 90% of the TTL, so this holds once the entry itself lasts the whole window.
+		if (run.delayMs >= MAX_IDLE_WARMING_AGE_MS * 0.9) return "cache entry outlives the 1-hour idle window";
 		if (run.nextWarmAt <= deadline) return undefined;
-		return run.delayMs >= MAX_IDLE_WARMING_AGE_MS
-			? "cache entry outlives the 30-minute idle window"
-			: "30-minute idle safety limit reached";
+		return "1-hour idle safety limit reached";
 	}
 
 	/** A refresh sent at `sentAt` left the run's entry in the cache: its lifetime restarts then, at the replay's size. */
@@ -789,7 +789,11 @@ export class CacheWarmer {
 					break;
 				}
 				partial = event.partial;
-				if (isGenerationEvent(event) && !needsTerminalUsage) {
+				// A gateway relaying Converse opens with an all-zero envelope, so cutting off here
+				// would read a hit as a miss; read on to the terminal usage instead.
+				const envelopeUsage =
+					partial.usage.cacheRead > 0 || partial.usage.cacheWrite > 0 || partial.usage.input > 0;
+				if (isGenerationEvent(event) && !needsTerminalUsage && envelopeUsage) {
 					cutoff.abort();
 					break;
 				}
