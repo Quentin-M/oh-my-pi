@@ -299,6 +299,21 @@ export async function resolveAdvisorConfigEditPath(
 }
 
 /**
+ * Scope `/advisor configure` opens on: the project roster when one exists, else
+ * an existing user roster. Opening an absent project file would show an implicit
+ * every-turn default that is not what runs.
+ */
+export async function initialAdvisorConfigScope(dirs: {
+	projectDir: string;
+	agentDir: string;
+}): Promise<AdvisorConfigScope> {
+	const exists = async (scope: AdvisorConfigScope) =>
+		Bun.file(await resolveAdvisorConfigEditPath(scope, dirs)).exists();
+	if (await exists("project")) return "project";
+	return (await exists("user")) ? "user" : "project";
+}
+
+/**
  * Load one `WATCHDOG.yml` file for editing — raw, un-merged, un-expanded. Missing
  * or unparseable files yield an empty doc (never throws) so the editor opens
  * cleanly on a fresh or broken file. Validation is per entry, matching

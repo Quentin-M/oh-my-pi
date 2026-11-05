@@ -18,12 +18,12 @@ import {
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	discoverAdvisorConfigs,
+	initialAdvisorConfigScope,
 	loadWatchdogConfigFile,
 	resolveAdvisorConfigEditPath,
 	saveWatchdogConfigFile,
 } from "../../advisor";
 import { reset as resetCapabilities } from "../../capability";
-import type { AdvisorConfigScope } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { showGitOverlay } from "../../cli/git-tui";
 import { formatLoginIdentity } from "../../cli/oauth-terminal";
 import {
@@ -488,7 +488,6 @@ export class SelectorController {
 	showAdvisorConfigure(): void {
 		const cwd = this.ctx.sessionManager.getCwd();
 		const agentDir = getAgentDir() ?? getProjectDir();
-		const initialScope: AdvisorConfigScope = "project";
 		void (async () => {
 			// "Project" scope edits the repo-root WATCHDOG.yml (the project-level file
 			// discovery walks), not the launch subdir — `getProjectDir()` is only cwd.
@@ -499,6 +498,7 @@ export class SelectorController {
 				projectDir = cwd;
 			}
 			const dirs = { projectDir, agentDir };
+			const initialScope = await initialAdvisorConfigScope(dirs);
 			const initialDoc = await loadWatchdogConfigFile(await resolveAdvisorConfigEditPath(initialScope, dirs));
 			if (initialDoc.warnings?.length) {
 				this.ctx.showWarning(`WATCHDOG.yml: ${sanitizeDisplayWarnings(initialDoc.warnings).join("; ")}`);
