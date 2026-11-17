@@ -521,6 +521,7 @@ export interface SessionAdvisorsHost {
 	onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
 	isDisposed(): boolean;
 	abortInProgress(): boolean;
+	isAgentConnected(): boolean;
 	planModeState(): PlanModeState | undefined;
 	clientBridge(): ClientBridge | undefined;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
@@ -627,6 +628,7 @@ export class SessionAdvisors {
 	 * Continuations started by anything else (todo reminders, async wakes, live
 	 * delegations) are reviewed normally. Fresh user input voids the mark.
 	 */
+	#drainingQueuedAdvice = false;
 	#advisorContinuation: { userMessage: AgentMessage | undefined } | undefined;
 	/**
 	 * True while a terminal-boundary {@link onPrimaryTurnEnd} callback runs
@@ -1004,6 +1006,26 @@ export class SessionAdvisors {
 		await Promise.allSettled(this.#pendingAdvisorCardEvents);
 	}
 
+	/** Remove every queued advisor aside, built into one card, for a caller that preserves it itself (the user-interrupt abort). */
+	drainQueuedAdvice(): CustomMessage[] {
+		this.#drainingQueuedAdvice = true;
+		try {
+			const card = this.#host.yieldQueue.drainKind("advisor");
+			return card && isAdvisorCard(card) ? [card] : [];
+		} finally {
+			this.#drainingQueuedAdvice = false;
+		}
+	}
+
+	/** Re-record advisor asides that missed the loop's last poll as visible cards.
+	 *  No-op while the loop still runs, while an abort is tearing it down, or while
+	 *  the session is disconnected from agent events (`/compact`), because a card
+	 *  emitted then has no subscriber to persist it. */
+	preserveQueuedAdvice(): void {
+		if (this.#host.agent.state.isStreaming || this.#host.abortInProgress() || !this.#host.isAgentConnected()) return;
+		for (const card of this.drainQueuedAdvice()) this.#host.preserveAdvisorCard(card);
+	}
+
 	// Advisor runtime lifecycle
 	// -------------------------------------------------------------------------
 	#advisorImmuneTurnLimit(): number {
@@ -1032,6 +1054,14 @@ export class SessionAdvisors {
 			clamp(cfgAdvisorMaxNotesPerUpdate.get(this.#host.settings)) ??
 			ADVISOR_DEFAULT_BUDGET_PER_UPDATE
 		);
+	}
+
+	/** The primary is about to revise work the advisors reviewed: cancel every review of it still running or queued (the producer's own in-flight review is kept), owing each cancelled advisor a review at the continuation's end. */
+	#startAdvisorContinuation(producer?: ActiveAdvisor): void {
+		this.#advisorContinuation = { userMessage: lastPrimaryUserMessage(this.#host.agent.state.messages) };
+		for (const advisor of this.#advisors) {
+			if (advisor.runtime.supersede(advisor === producer)) advisor.reviewOwed = true;
+		}
 	}
 
 	// The next primary turn number starts the immune-turn window. While the
@@ -1757,22 +1787,26 @@ export class SessionAdvisors {
 		}
 
 		// One shared non-blocking aside channel for all advisors; the build callback
-		// aggregates every advisor's queued nits into one card (each entry already
+		// aggregates every advisor's queued nits and concerns into one card (each entry already
 		// carries its own `advisor` name).
 		if (this.#advisors.length > 0 && !this.#advisorYieldQueueUnsubscribe) {
 			this.#advisorYieldQueueUnsubscribe = this.#host.yieldQueue.register<AdvisorNote>("advisor", {
-				build: entries =>
-					entries.length === 0
-						? null
-						: ({
-								role: "custom",
-								customType: "advisor",
-								display: true,
-								attribution: "agent",
-								timestamp: Date.now(),
-								content: formatAdvisorBatchContent(entries),
-								details: { notes: entries } satisfies AdvisorMessageDetails,
-							} satisfies CustomMessage),
+				build: entries => {
+					if (entries.length === 0) return null;
+					// The loop polling the queue past a terminal boundary restarts finished
+					// work with this card, as a steered continuation would. A preserve-only
+					// drain starts no turn.
+					if (this.#terminalUnwindActive && !this.#drainingQueuedAdvice) this.#startAdvisorContinuation();
+					return {
+						role: "custom",
+						customType: "advisor",
+						display: true,
+						attribution: "agent",
+						timestamp: Date.now(),
+						content: formatAdvisorBatchContent(entries),
+						details: { notes: entries } satisfies AdvisorMessageDetails,
+					} satisfies CustomMessage;
+				},
 				skipIdleFlush: true,
 			});
 		}
@@ -1950,10 +1984,7 @@ export class SessionAdvisors {
 				// still running or queued, so none can re-raise what is being fixed;
 				// each advisor that lost one reviews at the continuation's end instead.
 				if (!this.#host.agent.state.isStreaming || this.#terminalUnwindActive) {
-					this.#advisorContinuation = { userMessage: lastPrimaryUserMessage(this.#host.agent.state.messages) };
-					for (const advisor of this.#advisors) {
-						if (advisor.runtime.supersede(advisor === producer)) advisor.reviewOwed = true;
-					}
+					this.#startAdvisorContinuation(producer);
 				}
 				void this.#host
 					.sendCustomMessage(

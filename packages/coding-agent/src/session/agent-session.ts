@@ -1564,6 +1564,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (epoch === this.#inFlightEpoch) this.#promptInFlightCount = Math.max(0, this.#promptInFlightCount - 1);
 		if (this.#promptInFlightCount !== 0) return;
 		this.yieldQueue.requestIdleFlush();
+		this.#advisors.preserveQueuedAdvice();
 		this.#releasePowerAssertion();
 		this.#endComputerTurn();
 		// The prompt can unwind before abort() reaches its own idle barrier. Once the core loop is
@@ -2911,6 +2912,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			onSseEvent: this.#onSseEvent,
 			isDisposed: () => this.#isDisposed,
 			abortInProgress: () => this.#abortInProgress,
+			isAgentConnected: () => this.#unsubscribeAgent !== undefined,
 			planModeState: () => this.#planModeState,
 			clientBridge: () => this.#clientBridge,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
@@ -6669,6 +6671,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
 		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => this.#emitQueueUpdateIfChanged());
 		this.#scheduleRunCheck();
+		// An aside queued before the disconnect (e.g. a `/compact` boundary) has no
+		// subscriber until this line runs; re-record it now that events flow again.
+		this.#advisors.preserveQueuedAdvice();
 	}
 
 	#activeProviderSessionId(sessionId?: string): string {
@@ -12471,7 +12476,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			if (parkedAdvisorCards.length > 0) {
 				this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(m => !isAdvisorCard(m));
 			}
-			for (const message of [...strandedMessages, ...parkedAdvisorCards]) {
+			// Advice still waiting for the next model step is stranded by a user interrupt too.
+			const strandedAdvice = userInterrupt ? this.#advisors.drainQueuedAdvice() : [];
+			for (const message of [...strandedMessages, ...strandedAdvice, ...parkedAdvisorCards]) {
 				if (isAdvisorCard(message)) this.#preserveAdvisorCard(message);
 				else if (this.agent.state.isStreaming) {
 					// Requeued as ordinary work: a later abort must not take it out again.
@@ -12481,6 +12488,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 		} finally {
 			this.#abortInProgress = false;
+			// A cleanup step that threw skipped the stranded-advice drain above, and the
+			// prompt's own settle ran while the abort flag still blocked preservation.
+			this.#advisors.preserveQueuedAdvice();
 			this.#drainStrandedQueuedMessages();
 			if (forceQueuedDelivery) this.#forcedQueuedMessageDeliveryCount--;
 			this.#abortUnwinds.delete(unwind.promise);
