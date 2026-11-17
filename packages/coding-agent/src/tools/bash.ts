@@ -55,6 +55,7 @@ import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { outputMeta, resolveInlineByteCapBudget } from "./output-meta";
 import { resolveShellDirectory, resolveToCwd } from "./path-utils";
 import {
+	CONSERVATIVE_SHELL_LEX_VARIANTS,
 	extractAndChainSegments,
 	extractLeadingCdTarget,
 	extractLiteralAndChainSegments,
@@ -303,20 +304,33 @@ function stripAllowedLeadingEnvAssignments(command: string, allowedEnvNames: rea
 // including when prefixed by leading `NAME=value` environment assignments.
 // Reuse the shared shell tokenizer so segmentation stays in one place and honors
 // every command boundary (`;`, `&&`, `||`, `|`, `&`, subshells, newlines).
+//
+// The tokenizer is not a full parser, and shells disagree on `$'...'` quoting and on
+// where `#` starts a comment. A deny or prompt rule therefore collects the segments of
+// every dialect reading, and of every line on its own when a here-doc may be present,
+// whose bodies the tokenizer cannot see: a quote inside one would otherwise swallow the
+// commands after it. Extra readings only add matches, so a hidden command costs at most
+// a prompt. `allow` never uses this: it needs the whole command free of shell control.
 function bashCommandSegments(command: string): string[] {
-	const candidates: string[] = [];
-	for (const words of tokenizeShellSegments(command)) {
-		if (words.length === 0) continue;
-		candidates.push(words.join(" "));
-		let firstCmdIndex = 0;
-		while (firstCmdIndex < words.length && isShellEnvironmentAssignment(words[firstCmdIndex])) {
-			firstCmdIndex++;
-		}
-		if (firstCmdIndex > 0 && firstCmdIndex < words.length) {
-			candidates.push(words.slice(firstCmdIndex).join(" "));
+	const texts = command.includes("<<") ? [command, ...command.split("\n")] : [command];
+	const candidates = new Set<string>();
+	for (const text of texts) {
+		for (const variant of CONSERVATIVE_SHELL_LEX_VARIANTS) {
+			for (const words of tokenizeShellSegments(text, variant)) {
+				if (words.length === 0) continue;
+				candidates.add(words.join(" "));
+				let firstCmdIndex = 0;
+				while (firstCmdIndex < words.length && isShellEnvironmentAssignment(words[firstCmdIndex])) {
+					firstCmdIndex++;
+				}
+				if (firstCmdIndex > 0 && firstCmdIndex < words.length) {
+					candidates.add(words.slice(firstCmdIndex).join(" "));
+				}
+			}
 		}
 	}
-	return candidates;
+	candidates.delete("");
+	return [...candidates];
 }
 
 // `deny`/`prompt` matching: the rule fires when its glob matches the whole
